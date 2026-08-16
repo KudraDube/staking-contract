@@ -1,0 +1,12 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+
+[rpc_endpoints]
+bsc_testnet = "${ALCHEMY_BSC_TESTNET_RPC}"
+bsc_mainnet = "${ALCHEMY_BSC_MAINNET_RPC}"
+
+[etherscan]
+bsc_testnet = { key = "${ETHERSCAN_API_KEY}", chain = 97, url = "https://api.etherscan.io/v2/api" }
+bsc_mainnet = { key = "${ETHERSCAN_API_KEY}", chain = 56, url = "https://api.etherscan.io/v2/api" }
