@@ -13,7 +13,7 @@ This is the pattern behind most reward-paying DeFi contracts (Synthetix-style st
 | Item | State |
 |---|---|
 | Contract | Complete, patched with the Contracts Pack fixes |
-| Tests | 42 passing (unit, accumulator maths, reentrancy, fuzz, invariant) |
+| Tests | 45 passing (unit, accumulator maths, reentrancy, fuzz, invariant) |
 | Audit | None. This is a learning project, **do not deploy with real funds** |
 
 ## How it works
@@ -58,7 +58,7 @@ Nine of the tests fail against the unpatched version and pass against the patche
 
 ## Tests
 
-`test/StakingRewards.t.sol`, 42 tests:
+`test/StakingRewards.t.sol`, 45 tests:
 
 - every function: happy path, every `require`, events and access control
 - the pack's Alice and Bob numbers asserted exactly
