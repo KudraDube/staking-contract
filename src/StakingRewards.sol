@@ -28,6 +28,12 @@ contract StakingRewards is ReentrancyGuard, Ownable {
     mapping(address => uint256) public userRewardPerTokenPaid;  // accumulator value last time THIS user was updated
     mapping(address => uint256) public rewards;                 // rewards already earned but not yet claimed
 
+    // Events so wallets, indexers and tests can see what happened
+    event Staked(address indexed user, uint256 amount);
+    event Withdrawn(address indexed user, uint256 amount);
+    event RewardPaid(address indexed user, uint256 reward);
+    event RewardNotified(uint256 reward, uint256 rewardRate, uint256 periodFinish);
+
     constructor(address _stakingToken, address _rewardsToken) Ownable(msg.sender) {
         stakingToken = IERC20(_stakingToken);
         rewardsToken = IERC20(_rewardsToken);
@@ -85,6 +91,7 @@ contract StakingRewards is ReentrancyGuard, Ownable {
         totalSupply += amount;
         balanceOf[msg.sender] += amount;
         stakingToken.safeTransferFrom(msg.sender, address(this), amount);
+        emit Staked(msg.sender, amount);
     }
 
     function withdraw(uint256 amount) public nonReentrant updateReward(msg.sender) {
@@ -92,6 +99,7 @@ contract StakingRewards is ReentrancyGuard, Ownable {
         totalSupply -= amount;
         balanceOf[msg.sender] -= amount;
         stakingToken.safeTransfer(msg.sender, amount);
+        emit Withdrawn(msg.sender, amount);
     }
 
     function getReward() public nonReentrant updateReward(msg.sender) {
@@ -99,6 +107,7 @@ contract StakingRewards is ReentrancyGuard, Ownable {
         if (reward > 0) {
             rewards[msg.sender] = 0;
             rewardsToken.safeTransfer(msg.sender, reward);
+            emit RewardPaid(msg.sender, reward);
         }
     }
 
@@ -114,6 +123,7 @@ contract StakingRewards is ReentrancyGuard, Ownable {
     function notifyRewardAmount(uint256 reward, uint256 duration)
         external onlyOwner updateReward(address(0))
     {
+        require(duration > 0, "duration is zero");
         if (block.timestamp >= periodFinish) {
             rewardRate = reward / duration;
         } else {
@@ -121,7 +131,18 @@ contract StakingRewards is ReentrancyGuard, Ownable {
             uint256 leftover = remaining * rewardRate;
             rewardRate = (reward + leftover) / duration;
         }
+        require(rewardRate > 0, "rate is zero");
+
+        // The contract must already hold enough reward tokens to pay the whole period.
+        // If staking and rewards are the same token, the stakers' deposits are not reward money.
+        uint256 available = rewardsToken.balanceOf(address(this));
+        if (address(rewardsToken) == address(stakingToken)) {
+            available -= totalSupply;
+        }
+        require(rewardRate * duration <= available, "reward too high");
+
         lastUpdateTime = block.timestamp;
         periodFinish = block.timestamp + duration;
+        emit RewardNotified(reward, rewardRate, periodFinish);
     }
 }

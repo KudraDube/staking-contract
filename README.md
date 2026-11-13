@@ -1,113 +1,89 @@
 # StakingRewards
 
-A Solidity staking contract implementing the Synthetix-style fixed-rate reward
-accumulator pattern. Users stake an ERC20 token and earn rewards (in the same
-or a different ERC20) proportional to their share of the pool and the time
-they've staked — without the contract ever looping over stakers to calculate
-history.
+A staking contract where users deposit a token and earn rewards over time, built to understand how DeFi protocols pay thousands of users without looping over them.
 
-Built with [Foundry](https://book.getfoundry.sh/) and [OpenZeppelin Contracts](https://www.openzeppelin.com/contracts).
+Think of a shared electricity meter for a block of flats. The building pays a fixed amount per second to the whole block. Instead of splitting the bill between tenants every second the contract keeps ONE running number: reward earned per staked token so far. Each tenant only remembers the meter reading from their last settlement. Earnings = stake x (meter now - meter at last settlement).
 
-## About
+## Why I built it
 
-Written by Kudra Dube — blockchain developer with a legal background (LLB,
-Wits), currently completing WeThinkCode's development programme. This project
-was built to demonstrate a solid grasp of a widely-used DeFi primitive: the
-reward-per-token accumulator pattern found in real production contracts.
+This is the pattern behind most reward-paying DeFi contracts (Synthetix-style staking). The hard part is not the code length. It is the discipline: the accumulator must be updated BEFORE any balance changes or the maths silently pays the wrong people. I wanted to understand that well enough to rewrite the core from memory with small numbers and to explain every line to an interviewer.
 
-[LinkedIn](https://linkedin.com/in/kudra-dube-a12706162) · [GitHub](https://github.com/KudraDube)
+## Status
+
+| Item | State |
+|---|---|
+| Contract | Complete, patched with the Contracts Pack fixes |
+| Tests | 42 passing (unit, accumulator maths, reentrancy, fuzz, invariant) |
+| Audit | None. This is a learning project, **do not deploy with real funds** |
 
 ## How it works
 
-The contract tracks a single global accumulator, `rewardPerTokenStored`, which
-answers: "if you'd staked exactly 1 token since the contract began, how much
-reward would that token have earned by now?" Each user's own claimable reward
-is calculated as their balance times the difference between the current
-accumulator value and a personal snapshot taken the last time their balance
-changed. This lets stakers join and leave at arbitrary, unsynchronized times
-while still being paid a fair, gas-cheap share.
-
-Core functions:
-
-| Function | Purpose |
+| Piece | Job |
 |---|---|
-| `stake(uint256 amount)` | Deposit staking tokens |
-| `withdraw(uint256 amount)` | Withdraw staked tokens |
-| `getReward()` | Claim accrued rewards |
-| `exit()` | Withdraw full balance and claim rewards in one call |
-| `notifyRewardAmount(uint256 reward, uint256 duration)` | Owner-only: fund and start/extend a reward period |
-| `earned(address account)` | View: rewards currently owed to an account |
-| `rewardPerToken()` | View: current value of the global accumulator |
+| `rewardPerToken()` | The meter. Grows by rate x elapsed x 1e18 / totalSupply and stands still when nobody is staked |
+| `lastTimeRewardApplicable()` | Stops accrual at `periodFinish` |
+| `earned(account)` | Stake x (meter now - user's last reading) + already banked rewards |
+| `updateReward` modifier | Runs BEFORE the function body so the old balance is used for the old period |
+| `notifyRewardAmount` | Owner starts a reward period. Unpaid leftovers roll into the new rate. |
 
-## Project structure
+The tiny numbers I check my understanding against: rate 10 per second. Alice stakes 100 at time 0 and Bob stakes 100 at time 10. At time 20 Alice has earned 150 and Bob 50 (total 200 = 20 seconds x 10). A test asserts exactly these figures.
 
-```
-├── src/
-│   └── StakingRewards.sol
-├── test/
-│   └── StakingRewards.t.sol
-├── script/
-│   └── DeployStakingRewards.s.sol
-└── foundry.toml
-```
+## What I patched and why
 
-## Setup
+The original `notifyRewardAmount` never checked that the contract could pay what it promised. If the owner announced a rate the contract could not fund then the last people to claim would find their transactions reverting.
+
+- `duration > 0`: a zero duration caused a raw divide-by-zero panic. Now it fails with a clear message.
+- `rewardRate > 0`: a tiny reward over a long duration rounds the rate down to zero and the period silently pays nothing.
+- **Solvency check:** `rewardRate x duration` must not exceed the reward tokens the contract actually holds. When the staking and reward token are the same token the stakers' deposits are subtracted first because they are not reward money.
+- **Events** for stake, withdraw, claim and each new reward period, so off-chain tools can follow the contract.
+
+Nine of the tests fail against the unpatched version and pass against the patched one.
+
+## Design decisions
+
+- **One global accumulator** instead of a loop over users, so gas cost does not grow with the number of stakers.
+- **1e18 scaling** so small rewards do not round to zero.
+- **`nonReentrant` on every function that moves tokens** and balances updated before transfers.
+- **The owner pre-funds the contract** with reward tokens and then calls `notifyRewardAmount`. The contract checks the funding rather than trusting the owner.
+
+## Known limitations
+
+- **The solvency check looks at the contract's reward balance.** It does not subtract rewards that users have already earned but not yet claimed. A stricter version would track total rewards owed.
+- **Rewards earned while nobody is staked are stranded.** The accumulator stands still on an empty pool so that time's rewards stay in the contract with no way to recover them. A test documents this.
+- **Fee-on-transfer staking tokens are not supported.** The deposit is credited at the nominal amount (the same issue I patched in my escrow contract).
+- **No rescue function** for tokens sent to the contract by mistake.
+- **`exit()` reverts if nothing is staked** because `withdraw(0)` is rejected.
+- **The owner is a single address.** It can start periods but cannot take staked funds. Renouncing ownership would stop future reward periods.
+- **Reward rate rounding** leaves a few wei of dust per period.
+
+## Tests
+
+`test/StakingRewards.t.sol`, 42 tests:
+
+- every function: happy path, every `require`, events and access control
+- the pack's Alice and Bob numbers asserted exactly
+- accrual edge cases: before funding, empty pool, late joiner, full withdrawal, after `periodFinish`
+- mid-period top-up where leftovers carry into the new rate and total payout equals total funding
+- reentrancy tests with hostile tokens on both the staking and the reward side
+- fuzz tests: rewards never exceed funding and larger stakes earn more over the same time
+- 4 invariants after random stakes, withdrawals, claims and time jumps: staked tokens held equal `totalSupply`, `totalSupply` equals the sum of stakes, and tokens are conserved
+
+## Run it
 
 ```bash
-git clone https://github.com/KudraDube/staking-contract.git
-cd staking-contract
-forge install
-forge build
+forge install OpenZeppelin/openzeppelin-contracts foundry-rs/forge-std
+forge test
 ```
 
-## Testing
+## What I practised
 
-```bash
-forge test -vvv
-```
+- the accumulator pattern and why the modifier must run before the balance changes
+- running the maths by hand with tiny numbers and then proving it with exact test assertions
+- time-based testing with `skip` and `vm.warp`
+- reading a security finding in the Contracts Pack and turning it into failing tests and a fix
+- invariant testing with a handler that jumps through time
+- being honest about limits: documenting what the contract does NOT protect against
 
-Tests cover staggered stakers (using `vm.warp` to simulate users staking at
-different times) to verify the accumulator distributes rewards fairly across
-overlapping and non-overlapping staking periods.
+## Where this is going
 
-## Deployment
-
-Deployed and verified on BSC Testnet, then redeployed unchanged to BSC
-Mainnet.
-
-```bash
-forge script script/DeployStakingRewards.s.sol --rpc-url $BSC_TESTNET_RPC --broadcast --verify
-```
-
-Set the following in a `.env` file (not committed):
-
-```
-BSC_TESTNET_RPC=
-BSC_MAINNET_RPC=
-PRIVATE_KEY=
-BSCSCAN_API_KEY=
-```
-
-### Deployed addresses
-
-| Network | Contract | Address |
-|---|---|---|
-| BSC Testnet | StakingRewards | `TBD` |
-| BSC Mainnet | StakingRewards | [`0x71f4f7fa4004f3e7d04968ea8967cd0a95bab0c4`](https://bscscan.com/address/0x71f4f7fa4004f3e7d04968ea8967cd0a95bab0c4) |
-| BSC Mainnet | MockERC20 (staking token) | [`0xfbb331829cc7d67db805c4d8ba4d95b21071e662`](https://bscscan.com/address/0xfbb331829cc7d67db805c4d8ba4d95b21071e662) |
-| BSC Mainnet | MockERC20 (rewards token) | [`0x8cef581fa5af147fb56070ea8cc976993fd56abf`](https://bscscan.com/address/0x8cef581fa5af147fb56070ea8cc976993fd56abf) |
-
-> Note: this is a demo deployment using mock ERC20 tokens for both staking
-> and rewards, intended to demonstrate a real mainnet deployment workflow
-> rather than hold real value.
-
-## Security notes
-
-- `nonReentrant` guards on all state-changing user-facing functions.
-- Reward accounting uses OpenZeppelin's `SafeERC20` for all token transfers.
-- Owner-only `notifyRewardAmount` controls reward funding; stakers cannot
-  affect the reward rate.
-
-## License
-
-MIT
+I am a WeThinkCode blockchain graduate building towards a junior Solidity or Web3 role. This repository is one of a set (SimpleDEX, EthVault, MultiSigWallet, P2PEscrow, StakingRewards) where each contract comes with tests I can explain line by line.
